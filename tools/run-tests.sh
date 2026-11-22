@@ -5,17 +5,17 @@ root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 trap 'exit 1' HUP INT TERM
-mkdir "$scratch/tests"
 
-# Test the internal decoder without adding a public entry point before
-# Message.from_wire can be defined.
-for suite in "$root"/tests/*_test.zap; do
-    {
-        cat "$root/src/dns.zap"
-        printf '\n'
-        cat "$suite"
-    } > "$scratch/tests/$(basename "$suite")"
-done
+ln -s "$root" "$scratch/dns"
+cat > "$scratch/zap.toml" <<'MANIFEST'
+[package]
+name = "dns_tests"
+version = "0.0.0"
 
-cd "$scratch"
-zap test tests/
+[dependencies]
+dns = { path = "dns" }
+MANIFEST
+
+(cd "$scratch" && zap zenv create --no-venv)
+cd "$root"
+ZAP_ZENV="$scratch/zenv" zap test tests/

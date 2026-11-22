@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Added DNS header and section framing, compressed names, and typed record data
-  for CNAME, MX, TXT, NS, SOA, SRV, and PTR. The named message constructors and
-  address conversion for A and AAAA have upstream dependencies.
+- Added `Message.query`, `Message.from_wire`, and `Message.to_wire`, with DNS
+  header and section framing, compressed names, and typed record data for
+  A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, and PTR.
 - Added the initial Zap package layout and formatting checks for source and tests.

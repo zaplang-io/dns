@@ -1,11 +1,10 @@
 # RFC 1035 messages, using dnspython's section and record-data model.
 
+import crypto
+import net
+
 # Raised when a DNS message or a record has an invalid wire representation.
 struct WireFormatError:
-    str message
-
-# Internal marker for conversion paths blocked on zap#1261.
-struct _AddressConversionUnavailable:
     str message
 
 # An absolute DNS name as wire labels. An empty list represents the root.
@@ -42,9 +41,99 @@ struct Message:
     list[RRset] authority
     list[RRset] additional
 
+    def query(str name, str rtype) -> Message:
+        "Build a recursive IN query with a random ID from an ASCII DNS name and type mnemonic."
+        auto owner = _query_name(name)
+        auto question = RRset(owner, 1, _query_type(rtype), 0, [])
+        auto entropy = crypto.random_bytes(2)
+        auto id = int64(entropy[0]) << 8 | int64(entropy[1])
+        return Message(id, 0x0100, [question], [], [], [])
+
+    def from_wire(bytes data) -> Message:
+        "Decode one complete DNS message. Raise WireFormatError for malformed input."
+        return _decode(data)
+
     def to_wire(self) -> bytes:
         "Encode a complete DNS message, compressing eligible domain names."
         return _encode(self)
+
+def _query_name(str text) -> Name:
+    auto data = bytes(text)
+    if data == b".":
+        return Name([])
+    if len(data) == 0:
+        raise WireFormatError("empty DNS name; use '.' for the root")
+    list[bytes] labels = []
+    list[int64] label = []
+    auto index = 0
+    while index < len(data):
+        auto octet = int64(data[index])
+        index = index + 1
+        if octet == 46:
+            if len(label) == 0:
+                raise WireFormatError("empty DNS label")
+            labels.append(bytes(label))
+            label = []
+            continue
+        if octet == 92:
+            if index == len(data):
+                raise WireFormatError("incomplete DNS name escape")
+            octet = int64(data[index])
+            index = index + 1
+            if octet >= 48 and octet <= 57:
+                if len(data) - index < 2:
+                    raise WireFormatError(
+                        "DNS numeric escapes require three decimal digits",
+                    )
+                auto tens = int64(data[index]) - 48
+                auto units = int64(data[index + 1]) - 48
+                if tens < 0 or tens > 9 or units < 0 or units > 9:
+                    raise WireFormatError(
+                        "DNS numeric escapes require three decimal digits",
+                    )
+                octet = (octet - 48) * 100 + tens * 10 + units
+                index = index + 2
+                if octet > 255:
+                    raise WireFormatError("DNS name escape exceeds one octet")
+                label.append(octet)
+                continue
+        if octet < 32 or octet > 126:
+            raise WireFormatError("DNS query names require ASCII or decimal escapes")
+        label.append(octet)
+    if len(label) != 0:
+        labels.append(bytes(label))
+    auto name = Name(labels)
+    _name_key(name, False)
+    return name
+
+def _query_type(str mnemonic) -> int64:
+    match mnemonic.upper():
+        case "A":
+            return 1
+        case "NS":
+            return 2
+        case "CNAME":
+            return 5
+        case "SOA":
+            return 6
+        case "PTR":
+            return 12
+        case "MX":
+            return 15
+        case "TXT":
+            return 16
+        case "AAAA":
+            return 28
+        case "SRV":
+            return 33
+        case _:
+            raise WireFormatError("unknown DNS query type: " + mnemonic)
+
+def _pack_address(str family, str address) -> bytes:
+    try:
+        return net.inet_pton(family, address)
+    except ValueError:
+        raise WireFormatError("invalid " + family + " address: " + address)
 
 def _name_key(Name name, bool fold_case) -> bytes:
     list[int64] octets = []
@@ -108,10 +197,8 @@ struct _Writer:
         if actual_type != 0 and actual_type != rdtype:
             raise WireFormatError("RRset type and record data disagree")
         match item:
-            case Rdata.A(_):
-                raise _AddressConversionUnavailable(
-                    "A address conversion requires zap#1261",
-                )
+            case Rdata.A(address):
+                self._copy(_pack_address("ipv4", address))
             case Rdata.NS(target):
                 self._name(target, True)
             case Rdata.CNAME(target):
@@ -135,10 +222,8 @@ struct _Writer:
                 for part in strings:
                     self._word(len(part), 1)
                     self._copy(part)
-            case Rdata.AAAA(_):
-                raise _AddressConversionUnavailable(
-                    "AAAA address conversion requires zap#1261",
-                )
+            case Rdata.AAAA(address):
+                self._copy(_pack_address("ipv6", address))
             case Rdata.SRV(priority, weight, port, target):
                 self._word(priority, 2)
                 self._word(weight, 2)
@@ -294,9 +379,7 @@ struct _Reader:
         if rdtype == 1:
             if self.limit - self.pos != 4:
                 raise WireFormatError("A RDATA must contain 4 octets")
-            raise _AddressConversionUnavailable(
-                "A address conversion requires zap#1261",
-            )
+            return Rdata.A(net.inet_ntop("ipv4", self._copy(4)))
         if rdtype == 2:
             return Rdata.NS(self._name(True))
         if rdtype == 5:
@@ -326,9 +409,7 @@ struct _Reader:
         if rdtype == 28:
             if self.limit - self.pos != 16:
                 raise WireFormatError("AAAA RDATA must contain 16 octets")
-            raise _AddressConversionUnavailable(
-                "AAAA address conversion requires zap#1261",
-            )
+            return Rdata.AAAA(net.inet_ntop("ipv6", self._copy(16)))
         if rdtype == 33:
             auto priority = self._word(2)
             auto weight = self._word(2)
@@ -376,7 +457,6 @@ struct _Reader:
                 section.append(RRset(name, rdclass, rdtype, ttl, [item]))
         return section
 
-# Kept internal until Zap supports the agreed Message.from_wire constructor.
 def _decode(bytes data) -> Message:
     if len(data) > 65535:
         raise WireFormatError("DNS message exceeds 65535 octets")

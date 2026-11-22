@@ -24,5 +24,12 @@ and TXT carries a list of byte strings. Unknown record types retain opaque bytes
 with the original type code. Decoding coalesces records with the same owner,
 class, and type within each section and uses the lowest TTL of the group.
 
-The named constructors depend on [Zap #1260](https://github.com/zaplang-io/zap/issues/1260).
-A and AAAA conversion depends on [Zap #1261](https://github.com/zaplang-io/zap/issues/1261).
+Use Zap's associated functions for `Message.query` and `Message.from_wire`
+([Zap #1260](https://github.com/zaplang-io/zap/issues/1260)). Use the stdlib's
+`net.inet_pton` and `net.inet_ntop` for A and AAAA text conversion
+([Zap #1261](https://github.com/zaplang-io/zap/issues/1261)).
+
+`Message.query` uses class IN, sets recursion desired, and generates a random
+16-bit ID. It accepts ASCII names with DNS escapes and case-insensitive Tier-1
+type mnemonics. A trailing dot is optional for ordinary names, and `.` denotes
+the root.
