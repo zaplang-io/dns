@@ -6,7 +6,7 @@ DNS toolkit for [Zap](https://github.com/zaplang-io/zap) — an official **non-c
 - Contributor & agent conventions: [AGENTS.md](AGENTS.md)
 - Design decisions: [DECISIONS.md](DECISIONS.md)
 
-> **Status: package scaffold.** The [Tier-1 epic](https://github.com/zaplang-io/dns/issues/1) tracks the DNS implementation.
+> **Status: wire codec in development.** The [Tier-1 epic](https://github.com/zaplang-io/dns/issues/1) tracks the DNS implementation. The codec PR depends on [Zap #1260](https://github.com/zaplang-io/zap/issues/1260) for named constructors and [Zap #1261](https://github.com/zaplang-io/zap/issues/1261) for A and AAAA address conversion.
 
 ## Goals
 
@@ -48,8 +48,11 @@ The package entry point is `src/dns.zap`. Native Zap test suites live under
 
 ```sh
 zap fmt --check src tests
-zap test tests/
+sh tools/run-tests.sh
 ```
+
+The runner uses `zap test tests/` in a temporary directory with the codec and
+suite in the same module so the tests can exercise the internal decoder.
 
 GitHub Actions runs both checks on pull requests and pushes to `main` inside
 the `ghcr.io/zaplang-io/zap:latest` container.
