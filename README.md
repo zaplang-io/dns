@@ -50,6 +50,9 @@ names = dns.resolve_address("93.184.216.34")
 
 The exact signatures (keyword vs positional, defaults, return shapes) are not final. Any ambiguity is escalated to the maintainer with Python/Go examples and recorded in [DECISIONS.md](DECISIONS.md) rather than decided unilaterally.
 
+Resolver `timeout` and `lifetime` will be expressed in fractional seconds.
+The planned resolver errors will share a catchable `DNSException` base.
+
 ## Build and test
 
 The package entry point is `src/dns.zap`. Native Zap test suites live under

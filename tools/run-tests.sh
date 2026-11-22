@@ -17,5 +17,14 @@ dns = { path = "dns" }
 MANIFEST
 
 (cd "$scratch" && zap zenv create --no-venv)
-cd "$root"
+mkdir "$scratch/tests"
+cp "$root"/tests/*_test.zap "$scratch/tests/"
+# Keep the deadline calculations private while exercising them with native tests.
+{
+    cat "$root/src/_deadlines.zap"
+    printf '\n'
+    cat "$root/tests/internal/deadlines_test.zap"
+} > "$scratch/tests/deadlines_test.zap"
+
+cd "$scratch"
 ZAP_ZENV="$scratch/zenv" zap test tests/

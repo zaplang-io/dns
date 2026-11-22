@@ -33,3 +33,16 @@ Use Zap's associated functions for `Message.query` and `Message.from_wire`
 16-bit ID. It accepts ASCII names with DNS escapes and case-insensitive Tier-1
 type mnemonics. A trailing dot is optional for ordinary names, and `.` denotes
 the root.
+
+## DNS errors and deadlines ([#6](https://github.com/zaplang-io/dns/issues/6))
+
+Match dnspython's exception hierarchy. Callers can catch a concrete DNS error
+or catch the package-wide `DNSException`. The hierarchy depends on
+[Zap #1278](https://github.com/zaplang-io/zap/issues/1278).
+
+Public `timeout` and `lifetime` values use fractional seconds. Internally, DNS
+uses absolute monotonic nanosecond deadlines compatible with Zap networking.
+Each attempt is limited by the earlier of its own timeout and the original
+resolution lifetime. Zero means immediate expiry. Durations below one
+nanosecond round up, finite values beyond the representable range saturate,
+and negative or nonfinite values are invalid.
