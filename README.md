@@ -6,7 +6,7 @@ DNS toolkit for [Zap](https://github.com/zaplang-io/zap) — an official **non-c
 - Contributor & agent conventions: [AGENTS.md](AGENTS.md)
 - Design decisions: [DECISIONS.md](DECISIONS.md)
 
-> **Status: docs-first.** No implementation yet — the planned surface is tracked in the [issues](https://github.com/zaplang-io/dns/issues) (see the Tier-1 scope epic).
+> **Status: package scaffold.** The [Tier-1 epic](https://github.com/zaplang-io/dns/issues/1) tracks the DNS implementation.
 
 ## Goals
 
@@ -43,15 +43,16 @@ The exact signatures (keyword vs positional, defaults, return shapes) are not fi
 
 ## Build and test
 
-Test cases live under `tests/` and run with the `zap test` methodology:
+The package entry point is `src/dns.zap`. Native Zap test suites live under
+`tests/`. Run the formatting and test checks from the repository root:
 
-```
+```sh
+zap fmt --check src tests
 zap test tests/
 ```
 
-GitHub Actions runs the suite on pull requests and pushes inside the
-`ghcr.io/zaplang-io/zap:latest` container. CI stays pinned to `zap:latest`
-until this module reaches a 1.0 release.
+GitHub Actions runs both checks on pull requests and pushes to `main` inside
+the `ghcr.io/zaplang-io/zap:latest` container.
 
 ## Development
 
