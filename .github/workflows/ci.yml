@@ -19,4 +19,4 @@ jobs:
       - name: Check Zap formatting
         run: zap fmt --check src tests
       - name: Run tests
-        run: zap test tests/
+        run: sh tools/run-tests.sh

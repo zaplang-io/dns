@@ -6,7 +6,7 @@ DNS toolkit for [Zap](https://github.com/zaplang-io/zap) — an official **non-c
 - Contributor & agent conventions: [AGENTS.md](AGENTS.md)
 - Design decisions: [DECISIONS.md](DECISIONS.md)
 
-> **Status: package scaffold.** The [Tier-1 epic](https://github.com/zaplang-io/dns/issues/1) tracks the DNS implementation.
+The [Tier-1 epic](https://github.com/zaplang-io/dns/issues/1) tracks the DNS implementation.
 
 ## Goals
 
@@ -20,7 +20,21 @@ Planned scope (first cut):
 - **TTL-aware caching** of positive and negative answers.
 - A clear **error and timeout model** (NXDOMAIN, SERVFAIL, truncation, timeout).
 
-## Usage (planned — illustrative only)
+## DNS wire codec
+
+```zap
+import dns
+
+msg = dns.Message.query("example.com", "MX")
+wire = msg.to_wire()
+decoded = dns.Message.from_wire(wire)
+```
+
+`Message.query` creates a recursive IN query for the given ASCII name and
+Tier-1 record type. Use `.` for the root. `Message.from_wire` parses a complete
+message and raises `dns.WireFormatError` on malformed input.
+
+## Resolver usage (planned)
 
 ```zap
 import dns
@@ -32,11 +46,6 @@ for rr in answers:
 
 # Reverse lookup.
 names = dns.resolve_address("93.184.216.34")
-
-# Lower-level message construction / parsing is also planned.
-msg = dns.Message.query("example.com", "MX")
-wire = msg.to_wire()
-reply = dns.Message.from_wire(wire)
 ```
 
 The exact signatures (keyword vs positional, defaults, return shapes) are not final. Any ambiguity is escalated to the maintainer with Python/Go examples and recorded in [DECISIONS.md](DECISIONS.md) rather than decided unilaterally.
@@ -48,8 +57,11 @@ The package entry point is `src/dns.zap`. Native Zap test suites live under
 
 ```sh
 zap fmt --check src tests
-zap test tests/
+sh tools/run-tests.sh
 ```
+
+The runner installs the checkout as a local Zap dependency in a temporary
+environment, then runs `zap test tests/` against the public package API.
 
 GitHub Actions runs both checks on pull requests and pushes to `main` inside
 the `ghcr.io/zaplang-io/zap:latest` container.

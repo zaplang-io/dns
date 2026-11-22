@@ -12,6 +12,24 @@ The package tracks [**dnspython**](https://www.dnspython.org/) as its primary
 API reference, with Go's `miekg/dns` and `net.Resolver` as secondary references.
 Deviations are recorded below, keyed to the issue that introduces them.
 
-## Decisions (2026-11-21)
+## DNS message and record data ([#3](https://github.com/zaplang-io/dns/issues/3))
 
-_No decisions recorded yet. Add one section per decision as issues are implemented._
+Use dnspython's `Message` model, with RRsets in the question, answer, authority,
+and additional sections. The header stores the message ID and flags. The number
+of questions and records in each section determines the wire counts.
+
+Tier-1 record data uses typed variants with dnspython field names. A and AAAA
+carry address text, name-bearing records carry absolute names as byte labels,
+and TXT carries a list of byte strings. Unknown record types retain opaque bytes
+with the original type code. Decoding coalesces records with the same owner,
+class, and type within each section and uses the lowest TTL of the group.
+
+Use Zap's associated functions for `Message.query` and `Message.from_wire`
+([Zap #1260](https://github.com/zaplang-io/zap/issues/1260)). Use the stdlib's
+`net.inet_pton` and `net.inet_ntop` for A and AAAA text conversion
+([Zap #1261](https://github.com/zaplang-io/zap/issues/1261)).
+
+`Message.query` uses class IN, sets recursion desired, and generates a random
+16-bit ID. It accepts ASCII names with DNS escapes and case-insensitive Tier-1
+type mnemonics. A trailing dot is optional for ordinary names, and `.` denotes
+the root.
