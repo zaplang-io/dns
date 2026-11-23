@@ -52,3 +52,26 @@ resolution lifetime, using exact integer `min`
 ([Zap #1279](https://github.com/zaplang-io/zap/issues/1279)). Zero means
 immediate expiry. Fractional nanoseconds round up, finite values beyond the
 representable range saturate, and negative or nonfinite values are invalid.
+
+## Resolver configuration ([#7](https://github.com/zaplang-io/dns/issues/7))
+
+The configuration parser understands `nameserver`, `search`, `domain`, and
+`options ndots:`. A valid `search` list takes precedence over `domain`.
+`ndots` from the file is capped at 15, following the system resolver
+convention. Invalid entries are ignored.
+
+Search qualification tries the bare name first at or above `ndots`, and
+tries the configured suffixes first below it. An absolute name skips suffix
+expansion. Duplicate candidates are compared case-insensitively, with the
+first spelling preserved.
+
+`Resolver()` constructs settings explicitly on any platform. Defaults are
+`ndots=1`, `timeout=2.0` seconds, `lifetime=5.0` seconds, and an empty search
+list. An empty nameserver list falls back to IPv4 then IPv6 loopback
+(`127.0.0.1`, `::1`), as in Go's system resolver.
+
+`Resolver.from_file(path)` reads an explicit file and returns default settings
+when Zap raises `FileNotFoundError`. Other filesystem errors propagate
+([Zap #1311](https://github.com/zaplang-io/zap/issues/1311)).
+`Resolver.system()` loads `/etc/resolv.conf` on Linux and macOS and returns
+default settings on other platforms.
