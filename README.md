@@ -33,6 +33,7 @@ decoded = dns.Message.from_wire(wire)
 `Message.query` creates a recursive IN query for the given ASCII name and
 Tier-1 record type. Use `.` for the root. `Message.from_wire` parses a complete
 message and raises `dns.WireFormatError` on malformed input.
+`WireFormatError` belongs to the `dns.DNSException` family.
 
 ## Resolver usage (planned)
 
@@ -49,6 +50,11 @@ names = dns.resolve_address("93.184.216.34")
 ```
 
 The exact signatures (keyword vs positional, defaults, return shapes) are not final. Any ambiguity is escalated to the maintainer with Python/Go examples and recorded in [DECISIONS.md](DECISIONS.md) rather than decided unilaterally.
+
+Resolver `timeout` and `lifetime` will be expressed in fractional seconds.
+The resolver and query layers share the `DNSException` family, including
+`NXDOMAIN`, `NoAnswer`, `ServFail`, `Truncated`, `Timeout`, and
+`TransportError`.
 
 ## Build and test
 

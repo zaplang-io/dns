@@ -17,5 +17,14 @@ dns = { path = "dns" }
 MANIFEST
 
 (cd "$scratch" && zap zenv create --no-venv)
-cd "$root"
+mkdir "$scratch/tests"
+cp "$root"/tests/*_test.zap "$scratch/tests/"
+# Exercise private query helpers without exposing them through the package API.
+{
+    cat "$root/src/dns.zap"
+    printf '\n'
+    cat "$root"/tests/internal/*_test.zap
+} > "$scratch/tests/query_model_test.zap"
+
+cd "$scratch"
 ZAP_ZENV="$scratch/zenv" zap test tests/
