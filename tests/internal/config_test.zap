@@ -111,3 +111,13 @@ def _search_rejects_malformed_queries():
         except WireFormatError:
             caught = True
         assert caught
+
+@test
+def _resolver_uses_its_search_order_and_fallback_nameservers():
+    auto config = Resolver(nameservers=[], search=[Name([b"corp", b"test"])], ndots=2)
+    assert config._effective_nameservers() == ["127.0.0.1", "::1"]
+    auto candidates = config._qualify("a.b")
+    assert candidates[0].labels == [b"a", b"b", b"corp", b"test"]
+    assert candidates[1].labels == [b"a", b"b"]
+    config.nameservers = ["192.0.2.53"]
+    assert config._effective_nameservers() == ["192.0.2.53"]

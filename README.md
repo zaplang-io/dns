@@ -35,7 +35,23 @@ Tier-1 record type. Use `.` for the root. `Message.from_wire` parses a complete
 message and raises `dns.WireFormatError` on malformed input.
 `WireFormatError` belongs to the `dns.DNSException` family.
 
-## Resolver usage (planned)
+## Resolver configuration
+
+```zap
+import dns
+
+config = dns.Resolver.system()
+custom = dns.Resolver.from_file("resolv.conf")
+explicit = dns.Resolver(nameservers=["192.0.2.53"], timeout=0.5)
+```
+
+`Resolver.system()` reads `/etc/resolv.conf` on Linux and macOS and returns
+defaults elsewhere. `Resolver.from_file(path)` returns defaults when the file
+is absent. Other filesystem errors propagate. The defaults are an empty
+search list, `ndots=1`, a 2-second timeout, and a 5-second lifetime. An empty
+nameserver list falls back to `127.0.0.1` and `::1`, in that order.
+
+## Resolver lookups (planned)
 
 ```zap
 import dns

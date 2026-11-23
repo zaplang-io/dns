@@ -65,6 +65,13 @@ tries the configured suffixes first below it. An absolute name skips suffix
 expansion. Duplicate candidates are compared case-insensitively, with the
 first spelling preserved.
 
-Reading file configuration and defaulting only when the file is absent
-depends on [Zap #1311](https://github.com/zaplang-io/zap/issues/1311). Platform
-scope, fallback behavior, and the public loading API are pending.
+`Resolver()` constructs settings explicitly on any platform. Defaults are
+`ndots=1`, `timeout=2.0` seconds, `lifetime=5.0` seconds, and an empty search
+list. An empty nameserver list falls back to IPv4 then IPv6 loopback
+(`127.0.0.1`, `::1`), as in Go's system resolver.
+
+`Resolver.from_file(path)` reads an explicit file and returns default settings
+when Zap raises `FileNotFoundError`. Other filesystem errors propagate
+([Zap #1311](https://github.com/zaplang-io/zap/issues/1311)).
+`Resolver.system()` loads `/etc/resolv.conf` on Linux and macOS and returns
+default settings on other platforms.

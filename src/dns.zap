@@ -1,8 +1,10 @@
 # RFC 1035 messages, using dnspython's section and record-data model.
 
 import crypto
+import fs
 import math
 import net
+import sys
 
 # Common catch type for query, response, wire, and transport failures.
 @exception
@@ -584,6 +586,44 @@ def _add_duration(int64 now_ns, int64 duration_ns) -> int64:
 def _check_deadline(int64 deadline_ns, int64 now_ns):
     if now_ns >= deadline_ns:
         raise Timeout("DNS query deadline expired")
+
+# Resolver settings for UDP/TCP DNS lookups. Timeout and lifetime are in seconds.
+struct Resolver:
+    list[str] nameservers = ["127.0.0.1", "::1"]
+    list[Name] search = []
+    int64 ndots = 1
+    f64 timeout = 2.0
+    f64 lifetime = 5.0
+
+    def from_file(str path) -> Resolver:
+        "Load resolver settings. A missing file returns the defaults."
+        auto text = ""
+        try:
+            text = fs.read_file(path)
+        except FileNotFoundError:
+            return Resolver()
+
+        auto config = Resolver()
+        auto parsed = _parse_resolv_conf(text, config.ndots)
+        if len(parsed.nameservers) > 0:
+            config.nameservers = parsed.nameservers
+        config.search = parsed.search
+        config.ndots = parsed.ndots
+        return config
+
+    def system() -> Resolver:
+        "Read /etc/resolv.conf on Linux and macOS. Elsewhere return defaults."
+        if sys.platform() in ["linux", "darwin"]:
+            return Resolver.from_file("/etc/resolv.conf")
+        return Resolver()
+
+    def _effective_nameservers(self) -> list[str]:
+        if len(self.nameservers) == 0:
+            return Resolver().nameservers
+        return self.nameservers
+
+    def _qualify(self, str name) -> list[Name]:
+        return _candidate_names(name, self.search, self.ndots)
 
 # The directives understood by the resolver. Defaults for the other resolver
 # settings do not depend on the file.

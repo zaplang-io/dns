@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Added internal parsing for resolver settings and DNS search-name qualification.
+- Added explicit, file-based, and system resolver configuration with
+  nameserver fallback and DNS search-name qualification.
 - Added internal per-attempt deadlines bounded by a single resolution lifetime.
 - Added the catchable `DNSException` family, typed response errors, and
   truncation and timeout classification for the query layer.
