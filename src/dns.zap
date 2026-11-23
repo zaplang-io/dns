@@ -817,11 +817,11 @@ def _udp_exchange(
             while True:
                 auto packet = bytes(net.recv(socket, limit + 1))
                 _check_deadline(deadline, time.monotonic_ns())
-                if len(packet) > limit:
-                    raise WireFormatError(
-                        "DNS UDP response exceeds the advertised payload limit",
-                    )
                 if _matches_response(query, packet):
+                    if len(packet) > limit:
+                        raise WireFormatError(
+                            "DNS UDP response exceeds the advertised payload limit",
+                        )
                     return packet
         finally:
             net.close_conn(socket)

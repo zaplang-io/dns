@@ -93,6 +93,13 @@ def _send_unrelated_udp_replies(bytes server):
             [],
         )
         net.sendto(server, wrong_qtype.to_wire(), host, port)
+        auto wrong_opcode = dns.Message(answer.id, 0x8b80, answer.question, [], [], [])
+        net.sendto(server, wrong_opcode.to_wire(), host, port)
+        auto oversized_unrelated = wrong_id.to_wire()
+        for index in range(5):
+            oversized_unrelated = oversized_unrelated + oversized_unrelated
+        assert len(oversized_unrelated) > 512
+        net.sendto(server, oversized_unrelated, host, port)
         net.sendto(server, query.to_wire(), host, port)
         net.sendto(server, answer.to_wire(), host, port)
     finally:
@@ -310,3 +317,37 @@ def _exchange_rejects_invalid_endpoint_and_message():
         except dns.WireFormatError:
             rejected = True
         assert rejected
+
+@test
+def _udp_exchange_with_ipv6_nameserver():
+    auto server = net.udp_socket6()
+    net.udp_bind(server, "::1", 0)
+    net.set_deadline_ns(server, time.monotonic_ns() + 5000000000)
+    auto port = net.port(server)
+    auto query = dns.Message.query("ipv6.example.test", "TXT")
+    scope:
+        spawn _udp_responder(server, 1)
+        auto reply, tcp = dns.udp_with_fallback(query, "::1", port=port)
+        assert not tcp
+        _assert_txt(query, reply)
+
+def _respond_nxdomain(bytes server):
+    try:
+        auto payload, host, port = net.recvfrom(server, 512)
+        auto query = dns.Message.from_wire(bytes(payload))
+        auto response = dns.Message(query.id, 0x8183, query.question, [], [], [])
+        net.sendto(server, response.to_wire(), host, port)
+    finally:
+        net.close_conn(server)
+
+@test
+def _transport_preserves_dns_response_codes():
+    auto server = _udp_server_socket(0)
+    auto port = net.port(server)
+    auto query = dns.Message.query("missing.example.test", "TXT")
+    scope:
+        spawn _respond_nxdomain(server)
+        auto reply, tcp = dns.udp_with_fallback(query, "127.0.0.1", port=port)
+        assert not tcp
+        assert reply.flags & 15 == 3
+        assert len(reply.answer) == 0
