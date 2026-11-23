@@ -88,11 +88,7 @@ struct Message:
 
     def query(str name, str rtype) -> Message:
         "Build a recursive IN query with a random ID from an ASCII DNS name and type mnemonic."
-        auto owner = _query_name(name)
-        auto question = RRset(owner, 1, _query_type(rtype), 0, [])
-        auto entropy = crypto.random_bytes(2)
-        auto id = int64(entropy[0]) << 8 | int64(entropy[1])
-        return Message(id, 0x0100, [question], [], [], [])
+        return _make_query(_query_name(name), _query_type(rtype))
 
     def from_wire(bytes data) -> Message:
         "Decode one complete DNS message. Raise WireFormatError for malformed input."
@@ -101,6 +97,12 @@ struct Message:
     def to_wire(self) -> bytes:
         "Encode a complete DNS message, compressing eligible domain names."
         return _encode(self)
+
+def _make_query(Name name, int64 rdtype) -> Message:
+    auto question = RRset(name, 1, rdtype, 0, [])
+    auto entropy = crypto.random_bytes(2)
+    auto id = int64(entropy[0]) << 8 | int64(entropy[1])
+    return Message(id, 0x0100, [question], [], [], [])
 
 def _query_name(str text) -> Name:
     auto parsed = _parse_query_name(text)
@@ -588,6 +590,34 @@ def _check_deadline(int64 deadline_ns, int64 now_ns):
     if now_ns >= deadline_ns:
         raise Timeout("DNS query deadline expired")
 
+# A selected answer and its response metadata. The effective TTL includes any
+# CNAME links traversed while selecting the answer.
+struct Answer:
+    Name qname
+    Name canonical_name
+    RRset rrset
+    Message response
+    int64 ttl
+    str nameserver
+    int64 port
+
+    def __iter__(self) -> _AnswerIterator:
+        return _AnswerIterator(self.rrset.items, 0)
+
+struct _AnswerIterator:
+    list[Rdata] items
+    int64 index
+
+    def __iter__(self) -> _AnswerIterator:
+        return self
+
+    def __next__(self) -> Rdata:
+        if self.index >= len(self.items):
+            raise StopIteration
+        auto item = self.items[self.index]
+        self.index = self.index + 1
+        return item
+
 # Resolver settings for UDP/TCP DNS lookups. Timeout and lifetime are in seconds.
 struct Resolver:
     list[str] nameservers = ["127.0.0.1", "::1"]
@@ -595,6 +625,7 @@ struct Resolver:
     int64 ndots = 1
     f64 timeout = 2.0
     f64 lifetime = 5.0
+    int64 port = 53
 
     def from_file(str path) -> Resolver:
         "Load resolver settings. A missing file returns the defaults."
@@ -618,6 +649,17 @@ struct Resolver:
             return Resolver.from_file("/etc/resolv.conf")
         return Resolver()
 
+    def resolve(self, str name, str rtype = "A", bool search = False) -> Answer:
+        "Resolve a Tier-1 record type. Set search=True to try configured suffixes."
+        auto kind = _query_type(rtype)
+        if search:
+            return _resolve_candidates(self, self._qualify(name), kind)
+        return _resolve_candidates(self, [_query_name(name)], kind)
+
+    def resolve_address(self, str ipaddr) -> Answer:
+        "Resolve PTR records for an IPv4 or IPv6 literal."
+        return _resolve_candidates(self, [_reverse_name(ipaddr)], 12)
+
     def _effective_nameservers(self) -> list[str]:
         if len(self.nameservers) == 0:
             return Resolver().nameservers
@@ -625,6 +667,14 @@ struct Resolver:
 
     def _qualify(self, str name) -> list[Name]:
         return _candidate_names(name, self.search, self.ndots)
+
+def resolve(str name, str rtype = "A", bool search = False) -> Answer:
+    "Resolve a Tier-1 record type using system resolver settings."
+    return Resolver.system().resolve(name, rtype, search)
+
+def resolve_address(str ipaddr) -> Answer:
+    "Resolve PTR records for an IP literal using system resolver settings."
+    return Resolver.system().resolve_address(ipaddr)
 
 # The directives understood by the resolver. Defaults for the other resolver
 # settings do not depend on the file.
@@ -742,6 +792,15 @@ def udp_with_fallback(
     int64 port = 53,
 ) -> (Message, bool):
     "Exchange a query with a numeric nameserver. Return the reply and whether TCP was used."
+    auto budget = _DeadlineBudget._start(timeout, timeout, time.monotonic_ns())
+    return _exchange_until(message, where, port, budget._lifetime_deadline_ns)
+
+def _exchange_until(
+    Message message,
+    str where,
+    int64 port,
+    int64 deadline,
+) -> (Message, bool):
     if not _is_nameserver(where) or port < 1 or port > 65535:
         raise ValueError(
             "DNS exchange requires a numeric IP and a port from 1 to 65535",
@@ -751,12 +810,11 @@ def udp_with_fallback(
             "DNS exchange requires a standard query with one question",
         )
 
-    auto budget = _DeadlineBudget._start(timeout, timeout, time.monotonic_ns())
     auto wire = message.to_wire()
     auto limit = _udp_payload_limit(message)
     if len(wire) > limit:
         raise WireFormatError("DNS query exceeds the UDP payload limit")
-    auto deadline = budget._attempt_deadline(time.monotonic_ns())
+    _check_deadline(deadline, time.monotonic_ns())
     auto reply = _udp_exchange(message, wire, where, port, limit, deadline)
 
     if reply[2] & 2 != 0:
@@ -870,3 +928,134 @@ def _tcp_read_exact(bytes socket, int64 size) -> bytes:
         for index in range(len(chunk)):
             octets.append(int64(chunk[index]))
     return bytes(octets)
+
+def _resolve_candidates(Resolver config, list[Name] candidates, int64 rdtype) -> Answer:
+    auto budget = _DeadlineBudget._start(
+        config.timeout,
+        config.lifetime,
+        time.monotonic_ns(),
+    )
+    auto servers = config._effective_nameservers()
+    for index in range(len(candidates)):
+        auto query = _make_query(candidates[index], rdtype)
+        try:
+            return _resolve_on_nameservers(query, servers, config.port, budget)
+        except NXDOMAIN:
+            if index == len(candidates) - 1:
+                raise
+    raise NXDOMAIN("DNS name does not exist")
+
+def _resolve_on_nameservers(
+    Message query,
+    list[str] servers,
+    int64 port,
+    _DeadlineBudget budget,
+) -> Answer:
+    for index in range(len(servers)):
+        auto server = servers[index]
+        auto deadline = budget._attempt_deadline(time.monotonic_ns())
+        try:
+            auto response, used_tcp = _exchange_until(query, server, port, deadline)
+            _check_response_status(response.flags)
+            auto answer = _select_answer(query.question[0], response, server, port)
+            _check_deadline(deadline, time.monotonic_ns())
+            return answer
+        except NXDOMAIN:
+            # An authoritative negative result advances search, not nameserver retry.
+            raise
+        except NoAnswer:
+            raise
+        except DNSException:
+            if index == len(servers) - 1:
+                raise
+    raise TransportError("no DNS nameservers are available")
+
+def _select_answer(
+    RRset question,
+    Message response,
+    str nameserver,
+    int64 port,
+) -> Answer:
+    auto owner = question.name
+    auto ttl = 0xffffffff
+    dict[bytes, bool] visited = {}
+    for hop in range(17):
+        auto key = _name_key(owner, True)
+        if key in visited:
+            raise ResponseError("DNS CNAME chain contains a loop")
+        visited[key] = True
+
+        list[RRset] aliases = []
+        for rrset in response.answer:
+            if rrset.rdclass != question.rdclass or len(rrset.items) == 0:
+                continue
+            if rrset.rdtype != question.rdtype and rrset.rdtype != 5:
+                continue
+            if _name_key(rrset.name, True) != key:
+                continue
+            if rrset.rdtype == question.rdtype:
+                return Answer(
+                    question.name,
+                    owner,
+                    rrset,
+                    response,
+                    min(ttl, rrset.ttl),
+                    nameserver,
+                    port,
+                )
+            aliases.append(rrset)
+
+        if len(aliases) == 0:
+            raise NoAnswer("DNS response has no records of the requested type")
+        if hop == 16:
+            raise ResponseError("DNS CNAME chain exceeds 16 links")
+        auto target = _alias_target(aliases)
+        for alias in aliases:
+            ttl = min(ttl, alias.ttl)
+        owner = target
+    raise ResponseError("DNS CNAME chain exceeds 16 links")
+
+def _alias_target(list[RRset] aliases) -> Name:
+    auto owner = aliases[0].name
+    auto first = True
+    auto key = b""
+    for alias in aliases:
+        for item in alias.items:
+            match item:
+                case Rdata.CNAME(target):
+                    auto target_key = _name_key(target, True)
+                    if first:
+                        owner = target
+                        key = target_key
+                        first = False
+                    elif target_key != key:
+                        raise ResponseError("DNS CNAME has conflicting targets")
+                case _:
+                    raise WireFormatError("DNS CNAME has invalid record data")
+    return owner
+
+def _reverse_name(str ipaddr) -> Name:
+    auto family = "ipv4"
+    if ipaddr.find(":") >= 0:
+        family = "ipv6"
+    auto packed = net.inet_pton(family, ipaddr)
+    list[bytes] labels = []
+    if len(packed) == 16:
+        if packed[:12] == b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff":
+            packed = packed[12:]
+        else:
+            auto hex = b"0123456789abcdef"
+            for index in range(16):
+                auto octet = int64(packed[15 - index])
+                auto lo = octet & 15
+                auto hi = octet >> 4
+                labels.append(hex[lo:lo + 1])
+                labels.append(hex[hi:hi + 1])
+            labels.append(b"ip6")
+            labels.append(b"arpa")
+            return Name(labels)
+    for index in range(4):
+        labels.append(bytes(str(int64(packed[3 - index]))))
+    labels.append(b"in-addr")
+    labels.append(b"arpa")
+    return Name(labels)

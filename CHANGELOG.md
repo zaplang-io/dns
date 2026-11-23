@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added typed resolver lookups and IPv4 and IPv6 reverse lookup with iterable
+  answers and response metadata.
 - Added coroutine DNS exchanges over UDP with automatic TCP fallback.
 - Added explicit, file-based, and system resolver configuration with
   nameserver fallback and DNS search-name qualification.

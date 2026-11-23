@@ -89,3 +89,22 @@ response bit, transaction ID, opcode, and question before accepting a reply
 or retrying a truncated reply over TCP. Use one monotonic deadline across
 both transports. The UDP size limit is 512 bytes unless the query advertises
 a larger EDNS payload, and each TCP message has a two-octet length prefix.
+
+## Typed resolver ([#2](https://github.com/zaplang-io/dns/issues/2))
+
+`resolve(name, rtype="A", search=False)` and `resolve_address(ipaddr)` are
+available on both `Resolver` and the module. The module loads system resolver
+settings. Accept a case-insensitive mnemonic as a positional or keyword
+argument. Search suffixes are opt-in, as in dnspython. The configured DNS port
+defaults to 53.
+
+Return an iterable `Answer` with the original response, selected RRset, query
+name, canonical name, nameserver, port, and the minimum TTL of the selected
+RRset and CNAME links. Follow aliases within the response, stopping on loops,
+conflicting targets, or more than 16 links. Match the requested name, class,
+and type. A reverse query is always absolute. IPv4-mapped IPv6 addresses
+use the IPv4 reverse zone.
+
+NXDOMAIN advances to the next search candidate. NODATA returns `NoAnswer`.
+Other DNS response and transport failures advance to the next nameserver
+when available. Attempts share one overall lifetime.
