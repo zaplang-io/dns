@@ -75,3 +75,17 @@ when Zap raises `FileNotFoundError`. Other filesystem errors propagate
 ([Zap #1311](https://github.com/zaplang-io/zap/issues/1311)).
 `Resolver.system()` loads `/etc/resolv.conf` on Linux and macOS and returns
 default settings on other platforms.
+
+## DNS query transport ([#4](https://github.com/zaplang-io/dns/issues/4))
+
+Use direct-style calls on Zap's coroutine netpoller. The low-level transport
+follows dnspython's `udp_with_fallback(message, where, timeout, port)` and
+returns the response and a Boolean indicating whether TCP was used. The
+destination is a numeric IPv4 or IPv6 address. Timeout defaults to 2 seconds
+and the port to 53.
+
+A connected UDP socket restricts replies to the destination peer. Match the
+response bit, transaction ID, opcode, and question before accepting a reply
+or retrying a truncated reply over TCP. Use one monotonic deadline across
+both transports. The UDP size limit is 512 bytes unless the query advertises
+a larger EDNS payload, and each TCP message has a two-octet length prefix.
