@@ -5,6 +5,7 @@ import fs
 import math
 import net
 import sys
+import time
 
 # Common catch type for query, response, wire, and transport failures.
 @exception
@@ -733,3 +734,139 @@ def _candidate_names(str text, list[Name] search, int64 ndots) -> list[Name]:
     if not absolute_first and key not in seen:
         result.append(name)
     return result
+
+def udp_with_fallback(
+    Message message,
+    str where,
+    f64 timeout = 2.0,
+    int64 port = 53,
+) -> (Message, bool):
+    "Exchange a query with a numeric nameserver. Return the reply and whether TCP was used."
+    if not _is_nameserver(where) or port < 1 or port > 65535:
+        raise ValueError(
+            "DNS exchange requires a numeric IP and a port from 1 to 65535",
+        )
+    if message.flags & 0xf800 != 0 or len(message.question) != 1:
+        raise WireFormatError(
+            "DNS exchange requires a standard query with one question",
+        )
+
+    auto budget = _DeadlineBudget._start(timeout, timeout, time.monotonic_ns())
+    auto wire = message.to_wire()
+    auto limit = _udp_payload_limit(message)
+    if len(wire) > limit:
+        raise WireFormatError("DNS query exceeds the UDP payload limit")
+    auto deadline = budget._attempt_deadline(time.monotonic_ns())
+    auto reply = _udp_exchange(message, wire, where, port, limit, deadline)
+
+    if reply[2] & 2 != 0:
+        reply = _tcp_exchange(wire, where, port, deadline)
+        if not _matches_response(message, reply):
+            raise ResponseError("DNS TCP response does not match the query")
+        if reply[2] & 2 != 0:
+            raise Truncated("DNS TCP response is truncated")
+        return (Message.from_wire(reply), True)
+    return (Message.from_wire(reply), False)
+
+def _udp_payload_limit(Message query) -> int64:
+    for rrset in query.additional:
+        if rrset.rdtype == 41:
+            return max(512, rrset.rdclass)
+    return 512
+
+def _matches_response(Message query, bytes packet) -> bool:
+    if len(packet) < 12:
+        return False
+    auto reader = _Reader(packet, 0, len(packet))
+    auto id = reader._word(2)
+    auto flags = reader._word(2)
+    auto qdcount = reader._word(2)
+    if id != query.id or flags & 0x8000 == 0:
+        return False
+    if flags & 0x7800 != query.flags & 0x7800 or qdcount != len(query.question):
+        return False
+    reader.pos = 12
+    try:
+        auto questions = reader._questions(qdcount)
+        for index in range(qdcount):
+            auto expected = query.question[index]
+            auto received = questions[index]
+            if received.rdtype != expected.rdtype or received.rdclass != expected.rdclass:
+                return False
+            if _name_key(received.name, True) != _name_key(expected.name, True):
+                return False
+    except WireFormatError:
+        return False
+    return True
+
+def _udp_exchange(
+    Message query,
+    bytes wire,
+    str where,
+    int64 port,
+    int64 limit,
+    int64 deadline,
+) -> bytes:
+    try:
+        auto socket = net.udp_socket() if where.find(":") < 0 else net.udp_socket6()
+        try:
+            net.udp_connect(socket, where, port)
+            net.set_deadline_ns(socket, deadline)
+            if net.send(socket, wire) != len(wire):
+                raise TransportError("DNS UDP query was not sent in full")
+            while True:
+                auto packet = bytes(net.recv(socket, limit + 1))
+                _check_deadline(deadline, time.monotonic_ns())
+                if _matches_response(query, packet):
+                    if len(packet) > limit:
+                        raise WireFormatError(
+                            "DNS UDP response exceeds the advertised payload limit",
+                        )
+                    return packet
+        finally:
+            net.close_conn(socket)
+    except TimeoutError as message:
+        raise Timeout(message)
+    except DNSException:
+        raise
+    except Exception as message:
+        raise TransportError(message)
+
+def _tcp_exchange(bytes wire, str where, int64 port, int64 deadline) -> bytes:
+    try:
+        auto socket = net.connect_ip_deadline(where, port, deadline)
+        try:
+            net.set_deadline_ns(socket, deadline)
+            auto length = len(wire)
+            auto frame = bytes([length >> 8, length & 255]) + wire
+            if net.send(socket, frame) != len(frame):
+                raise TransportError("DNS TCP query was not sent in full")
+            auto prefix = _tcp_read_exact(socket, 2)
+            auto size = int64(prefix[0]) << 8 | int64(prefix[1])
+            if size < 12:
+                raise WireFormatError(
+                    "DNS TCP frame is shorter than the message header",
+                )
+            auto reply = _tcp_read_exact(socket, size)
+            _check_deadline(deadline, time.monotonic_ns())
+            return reply
+        finally:
+            net.close_conn(socket)
+    except TimeoutError as message:
+        raise Timeout(message)
+    except DNSException:
+        raise
+    except Exception as message:
+        raise TransportError(message)
+
+def _tcp_read_exact(bytes socket, int64 size) -> bytes:
+    list[int64] octets = []
+    while len(octets) < size:
+        auto chunk = bytes(net.recv(socket, size - len(octets)))
+        if len(chunk) == 0:
+            raise TransportError(
+                "DNS TCP peer closed before sending the complete frame",
+            )
+        for index in range(len(chunk)):
+            octets.append(int64(chunk[index]))
+    return bytes(octets)

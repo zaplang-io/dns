@@ -51,6 +51,19 @@ is absent. Other filesystem errors propagate. The defaults are an empty
 search list, `ndots=1`, a 2-second timeout, and a 5-second lifetime. An empty
 nameserver list falls back to `127.0.0.1` and `::1`, in that order.
 
+## DNS query transport
+
+```zap
+import dns
+
+query = dns.Message.query("example.com", "MX")
+reply, used_tcp = dns.udp_with_fallback(query, "127.0.0.1", timeout=2.0, port=53)
+```
+
+The call yields to other coroutines while waiting for network I/O. It retries
+a matching truncated UDP reply over TCP within the same timeout. The returned
+message retains the server's response code so callers can inspect it.
+
 ## Resolver lookups (planned)
 
 ```zap
