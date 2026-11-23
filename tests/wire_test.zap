@@ -406,3 +406,39 @@ def _invalid_addresses_and_widths():
         _reject_wire(_packet_with_answer(1, width, zeros[:width]))
     for width in [15, 17]:
         _reject_wire(_packet_with_answer(28, width, zeros[:width]))
+
+@test
+def _public_dns_exception_family():
+    auto caught = False
+    try:
+        dns.Message.from_wire(b"")
+    except dns.DNSException:
+        caught = True
+    assert caught
+
+    caught = False
+    try:
+        raise dns.TransportError("exchange failed")
+    except dns.ResponseError:
+        assert False
+    except dns.DNSException as message:
+        assert message == "exchange failed"
+        caught = True
+    assert caught
+
+    caught = False
+    try:
+        raise dns.Timeout("deadline expired")
+    except Exception as message:
+        assert message == "deadline expired"
+        caught = True
+    assert caught
+
+    caught = False
+    try:
+        raise ValueError("unrelated")
+    except dns.DNSException:
+        assert False
+    except ValueError:
+        caught = True
+    assert caught

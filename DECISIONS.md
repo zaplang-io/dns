@@ -36,13 +36,19 @@ the root.
 
 ## DNS errors and deadlines ([#6](https://github.com/zaplang-io/dns/issues/6))
 
-Match dnspython's exception hierarchy. Callers can catch a concrete DNS error
-or catch the package-wide `DNSException`. The hierarchy depends on
-[Zap #1278](https://github.com/zaplang-io/zap/issues/1278).
+Follow dnspython's shared exception-family model with Zap's `@exception`
+declarations ([Zap #1278](https://github.com/zaplang-io/zap/issues/1278)).
+Callers can catch a concrete DNS error, the package-wide `DNSException`, or
+Zap's general `Exception`. `ResponseError` groups `NXDOMAIN`, `ServFail`, and
+server RCODEs without a dedicated type. `NoAnswer` represents a successful
+response with no matching records after alias and record-type selection.
+The query layer checks truncation before the response code so the transport
+can retry a truncated UDP exchange over TCP.
 
 Public `timeout` and `lifetime` values use fractional seconds. Internally, DNS
 uses absolute monotonic nanosecond deadlines compatible with Zap networking.
 Each attempt is limited by the earlier of its own timeout and the original
-resolution lifetime. Zero means immediate expiry. Durations below one
-nanosecond round up, finite values beyond the representable range saturate,
-and negative or nonfinite values are invalid.
+resolution lifetime, using exact integer `min`
+([Zap #1279](https://github.com/zaplang-io/zap/issues/1279)). Zero means
+immediate expiry. Fractional nanoseconds round up, finite values beyond the
+representable range saturate, and negative or nonfinite values are invalid.

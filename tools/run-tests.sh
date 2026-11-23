@@ -19,12 +19,12 @@ MANIFEST
 (cd "$scratch" && zap zenv create --no-venv)
 mkdir "$scratch/tests"
 cp "$root"/tests/*_test.zap "$scratch/tests/"
-# Keep the deadline calculations private while exercising them with native tests.
+# Exercise private query helpers without exposing them through the package API.
 {
-    cat "$root/src/_deadlines.zap"
+    cat "$root/src/dns.zap"
     printf '\n'
-    cat "$root/tests/internal/deadlines_test.zap"
-} > "$scratch/tests/deadlines_test.zap"
+    cat "$root"/tests/internal/*_test.zap
+} > "$scratch/tests/query_model_test.zap"
 
 cd "$scratch"
 ZAP_ZENV="$scratch/zenv" zap test tests/

@@ -1,10 +1,52 @@
 # RFC 1035 messages, using dnspython's section and record-data model.
 
 import crypto
+import math
 import net
 
+# Common catch type for query, response, wire, and transport failures.
+@exception
+struct DNSException:
+    str message
+
 # Raised when a DNS message or a record has an invalid wire representation.
+@exception(DNSException)
 struct WireFormatError:
+    str message
+
+# A server returned a DNS error code.
+@exception(DNSException)
+struct ResponseError:
+    str message
+
+# The server returned NXDOMAIN.
+@exception(ResponseError)
+struct NXDOMAIN:
+    str message
+
+# The response has no usable records for the requested name, class, and type.
+@exception(DNSException)
+struct NoAnswer:
+    str message
+
+# The server returned SERVFAIL.
+@exception(ResponseError)
+struct ServFail:
+    str message
+
+# The TC bit is set. UDP callers can retry the query over TCP.
+@exception(DNSException)
+struct Truncated:
+    str message
+
+# A query timeout or the overall resolution lifetime expired.
+@exception(DNSException)
+struct Timeout:
+    str message
+
+# A DNS exchange failed at the transport layer.
+@exception(DNSException)
+struct TransportError:
     str message
 
 # An absolute DNS name as wire labels. An empty list represents the root.
@@ -474,3 +516,66 @@ def _decode(bytes data) -> Message:
     if reader.pos != len(data):
         raise WireFormatError("trailing octets after DNS message")
     return Message(id, flags, question, answer, authority, additional)
+
+# The query layer checks status after validating the response header. A truncated
+# UDP body can be incomplete, so this check needs only the header flags.
+def _check_response_status(int64 flags):
+    if flags & 0x0200 != 0:
+        raise Truncated("DNS response is truncated")
+    auto rcode = flags & 0x000f
+    if rcode == 0:
+        return
+    if rcode == 3:
+        raise NXDOMAIN("DNS name does not exist")
+    if rcode == 2:
+        raise ServFail("DNS server failure")
+    raise ResponseError("DNS response error code " + str(rcode))
+
+# The resolver passes the RRsets selected after following aliases and matching
+# the requested type. An empty selection under NOERROR represents NODATA.
+def _require_answer(list[RRset] selected):
+    for rrset in selected:
+        if len(rrset.items) > 0:
+            return
+    raise NoAnswer("DNS response has no records of the requested type")
+
+# A budget shared by all queries in one resolution. Every attempt computes its
+# deadline from the same lifetime limit and its own monotonic start time.
+struct _DeadlineBudget:
+    int64 _timeout_ns
+    int64 _lifetime_deadline_ns
+
+    def _start(f64 timeout, f64 lifetime, int64 now_ns) -> _DeadlineBudget:
+        auto timeout_ns = _duration_ns(timeout)
+        auto lifetime_ns = _duration_ns(lifetime)
+        return _DeadlineBudget(timeout_ns, _add_duration(now_ns, lifetime_ns))
+
+    def _attempt_deadline(self, int64 now_ns) -> int64:
+        auto deadline = min(
+            _add_duration(now_ns, self._timeout_ns),
+            self._lifetime_deadline_ns,
+        )
+        _check_deadline(deadline, now_ns)
+        return deadline
+
+def _duration_ns(f64 seconds) -> int64:
+    if not math.isfinite(seconds) or seconds < 0.0:
+        raise ValueError("DNS duration must be finite and nonnegative")
+    auto nanos = math.ceil(seconds * 1000000000.0)
+    # 2^63 is exactly representable as f64; int64 max is rounded up to it.
+    if nanos >= 9223372036854775808.0:
+        return 9223372036854775807
+    return int64(nanos)
+
+def _add_duration(int64 now_ns, int64 duration_ns) -> int64:
+    if now_ns < 0:
+        raise ValueError("DNS monotonic timestamp must be nonnegative")
+    auto limit = 9223372036854775807
+    if duration_ns > limit - now_ns:
+        return limit
+    return now_ns + duration_ns
+
+# Check before applying a socket deadline and after receiving a reply.
+def _check_deadline(int64 deadline_ns, int64 now_ns):
+    if now_ns >= deadline_ns:
+        raise Timeout("DNS query deadline expired")
