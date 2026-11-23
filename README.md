@@ -64,23 +64,31 @@ The call yields to other coroutines while waiting for network I/O. It retries
 a matching truncated UDP reply over TCP within the same timeout. The returned
 message retains the server's response code so callers can inspect it.
 
-## Resolver lookups (planned)
+## Resolver lookups
 
 ```zap
 import dns
 
 # Resolve a single record type.
-answers = dns.resolve("example.com", "A")
-for rr in answers:
-    print(rr.address)
+answer = dns.resolve("example.com", "A")
+for rr in answer:
+    match rr:
+        case dns.Rdata.A(address):
+            print(address)
+        case _:
+            pass
 
 # Reverse lookup.
-names = dns.resolve_address("93.184.216.34")
+answer = dns.resolve_address("93.184.216.34")
 ```
 
-The exact signatures (keyword vs positional, defaults, return shapes) are not final. Any ambiguity is escalated to the maintainer with Python/Go examples and recorded in [DECISIONS.md](DECISIONS.md) rather than decided unilaterally.
+Use `Resolver.resolve` or `Resolver.resolve_address` to use an explicit
+configuration. `resolve` accepts a Tier-1 mnemonic as a positional argument
+or as `rtype=`, defaulting to `A`. Use `search=True` to try configured search
+suffixes. The iterable `Answer` exposes the selected `rrset`, canonical name,
+effective TTL, and the original response.
 
-Resolver `timeout` and `lifetime` will be expressed in fractional seconds.
+Resolver `timeout` and `lifetime` are expressed in fractional seconds.
 The resolver and query layers share the `DNSException` family, including
 `NXDOMAIN`, `NoAnswer`, `ServFail`, `Truncated`, `Timeout`, and
 `TransportError`.
