@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added opt-in bounded LRU caching for positive and negative DNS replies.
 - Added typed resolver lookups and IPv4 and IPv6 reverse lookup with iterable
   answers and response metadata.
 - Added coroutine DNS exchanges over UDP with automatic TCP fallback.

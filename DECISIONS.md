@@ -108,3 +108,19 @@ use the IPv4 reverse zone.
 NXDOMAIN advances to the next search candidate. NODATA returns `NoAnswer`.
 Other DNS response and transport failures advance to the next nameserver
 when available. Attempts share one overall lifetime.
+
+## DNS cache ([#5](https://github.com/zaplang-io/dns/issues/5))
+
+Caching is opt-in through `Resolver.cache`. `Cache(max_size=100000)` is a
+bounded, coroutine-safe LRU cache. The capacity must be positive when used.
+Use a separate cache for each DNS view.
+
+Names are compared case-insensitively. Positive answers and NODATA are keyed
+by name, record type, and class. NXDOMAIN is keyed by name and class unless a
+CNAME was followed, in which case the alias lookup's negative result is
+scoped to the queried type. Negative TTL uses the closest enclosing SOA and
+the minimum of its RRset TTL, SOA MINIMUM, and any CNAME TTLs. Zero TTL and
+negative responses without a usable SOA expire immediately.
+
+Expiration uses monotonic time. Positive hits are decoded from the saved
+reply bytes, so mutating a returned answer cannot change the stored answer.

@@ -88,6 +88,19 @@ or as `rtype=`, defaulting to `A`. Use `search=True` to try configured search
 suffixes. The iterable `Answer` exposes the selected `rrset`, canonical name,
 effective TTL, and the original response.
 
+Attach a bounded cache to reuse responses until their DNS TTL expires.
+
+```zap
+resolver = dns.Resolver.system()
+resolver.cache = dns.Cache(max_size=100000)
+answer = resolver.resolve("example.com")
+```
+
+Caching is off by default. A cache evicts the least recently used entry when
+full and can be cleared with `flush()`. Positive answers use their effective
+TTL. Cacheable NXDOMAIN and NODATA replies use the authority SOA TTL and
+minimum. Use a separate cache for each resolver configuration or DNS view.
+
 Resolver `timeout` and `lifetime` are expressed in fractional seconds.
 The resolver and query layers share the `DNSException` family, including
 `NXDOMAIN`, `NoAnswer`, `ServFail`, `Truncated`, `Timeout`, and

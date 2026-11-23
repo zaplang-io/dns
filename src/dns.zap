@@ -4,6 +4,7 @@ import crypto
 import fs
 import math
 import net
+import sync
 import sys
 import time
 
@@ -626,6 +627,7 @@ struct Resolver:
     f64 timeout = 2.0
     f64 lifetime = 5.0
     int64 port = 53
+    Optional[Cache] cache = None
 
     def from_file(str path) -> Resolver:
         "Load resolver settings. A missing file returns the defaults."
@@ -793,14 +795,20 @@ def udp_with_fallback(
 ) -> (Message, bool):
     "Exchange a query with a numeric nameserver. Return the reply and whether TCP was used."
     auto budget = _DeadlineBudget._start(timeout, timeout, time.monotonic_ns())
-    return _exchange_until(message, where, port, budget._lifetime_deadline_ns)
+    auto wire, used_tcp = _exchange_until(
+        message,
+        where,
+        port,
+        budget._lifetime_deadline_ns,
+    )
+    return (Message.from_wire(wire), used_tcp)
 
 def _exchange_until(
     Message message,
     str where,
     int64 port,
     int64 deadline,
-) -> (Message, bool):
+) -> (bytes, bool):
     if not _is_nameserver(where) or port < 1 or port > 65535:
         raise ValueError(
             "DNS exchange requires a numeric IP and a port from 1 to 65535",
@@ -823,8 +831,8 @@ def _exchange_until(
             raise ResponseError("DNS TCP response does not match the query")
         if reply[2] & 2 != 0:
             raise Truncated("DNS TCP response is truncated")
-        return (Message.from_wire(reply), True)
-    return (Message.from_wire(reply), False)
+        return (reply, True)
+    return (reply, False)
 
 def _udp_payload_limit(Message query) -> int64:
     for rrset in query.additional:
@@ -937,9 +945,39 @@ def _resolve_candidates(Resolver config, list[Name] candidates, int64 rdtype) ->
     )
     auto servers = config._effective_nameservers()
     for index in range(len(candidates)):
-        auto query = _make_query(candidates[index], rdtype)
+        auto name = candidates[index]
         try:
-            return _resolve_on_nameservers(query, servers, config.port, budget)
+            if config.cache.is_some():
+                auto hit = config.cache.unwrap()._get(
+                    name,
+                    rdtype,
+                    1,
+                    time.monotonic_ns(),
+                )
+                if hit.is_some():
+                    match hit.unwrap():
+                        case _CacheValue.Positive(wire, nameserver, port):
+                            auto question = RRset(name, 1, rdtype, 0, [])
+                            return _select_answer(
+                                question,
+                                Message.from_wire(wire),
+                                nameserver,
+                                port,
+                            )
+                        case _CacheValue.MissingName:
+                            raise NXDOMAIN("DNS name does not exist")
+                        case _CacheValue.MissingRecords:
+                            raise NoAnswer(
+                                "DNS response has no records of the requested type",
+                            )
+            auto query = _make_query(name, rdtype)
+            return _resolve_on_nameservers(
+                query,
+                servers,
+                config.port,
+                budget,
+                config.cache,
+            )
         except NXDOMAIN:
             if index == len(candidates) - 1:
                 raise
@@ -950,15 +988,45 @@ def _resolve_on_nameservers(
     list[str] servers,
     int64 port,
     _DeadlineBudget budget,
+    Optional[Cache] cache,
 ) -> Answer:
     for index in range(len(servers)):
         auto server = servers[index]
         auto deadline = budget._attempt_deadline(time.monotonic_ns())
         try:
-            auto response, used_tcp = _exchange_until(query, server, port, deadline)
+            auto wire, used_tcp = _exchange_until(query, server, port, deadline)
+            auto response = Message.from_wire(wire)
+            auto question = query.question[0]
+            auto rcode = response.flags & 15
+            auto received_ns = time.monotonic_ns()
+            _check_deadline(deadline, received_ns)
+            if rcode == 3 and cache.is_some():
+                _remember_nxdomain(cache.unwrap(), question, response, received_ns)
             _check_response_status(response.flags)
-            auto answer = _select_answer(query.question[0], response, server, port)
+            auto chain = _answer_chain(question, response)
+            if not chain.rrset.is_some():
+                if cache.is_some():
+                    auto ttl = _negative_ttl(chain, response, question.rdclass)
+                    cache.unwrap()._put(
+                        question.name,
+                        question.rdtype,
+                        question.rdclass,
+                        _CacheValue.MissingRecords,
+                        ttl,
+                        received_ns,
+                    )
+                raise NoAnswer("DNS response has no records of the requested type")
+            auto answer = _answered(question, response, chain, server, port)
             _check_deadline(deadline, time.monotonic_ns())
+            if cache.is_some():
+                cache.unwrap()._put(
+                    question.name,
+                    question.rdtype,
+                    question.rdclass,
+                    _CacheValue.Positive(wire, server, port),
+                    answer.ttl,
+                    received_ns,
+                )
             return answer
         except NXDOMAIN:
             # An authoritative negative result advances search, not nameserver retry.
@@ -976,6 +1044,34 @@ def _select_answer(
     str nameserver,
     int64 port,
 ) -> Answer:
+    auto chain = _answer_chain(question, response)
+    if not chain.rrset.is_some():
+        raise NoAnswer("DNS response has no records of the requested type")
+    return _answered(question, response, chain, nameserver, port)
+
+struct _AnswerChain:
+    Name owner
+    Optional[RRset] rrset
+    int64 ttl
+
+def _answered(
+    RRset question,
+    Message response,
+    _AnswerChain chain,
+    str nameserver,
+    int64 port,
+) -> Answer:
+    return Answer(
+        question.name,
+        chain.owner,
+        chain.rrset.unwrap(),
+        response,
+        chain.ttl,
+        nameserver,
+        port,
+    )
+
+def _answer_chain(RRset question, Message response) -> _AnswerChain:
     auto owner = question.name
     auto ttl = 0xffffffff
     dict[bytes, bool] visited = {}
@@ -994,19 +1090,11 @@ def _select_answer(
             if _name_key(rrset.name, True) != key:
                 continue
             if rrset.rdtype == question.rdtype:
-                return Answer(
-                    question.name,
-                    owner,
-                    rrset,
-                    response,
-                    min(ttl, rrset.ttl),
-                    nameserver,
-                    port,
-                )
+                return _AnswerChain(owner, Optional.Some(rrset), min(ttl, rrset.ttl))
             aliases.append(rrset)
 
         if len(aliases) == 0:
-            raise NoAnswer("DNS response has no records of the requested type")
+            return _AnswerChain(owner, None, ttl)
         if hop == 16:
             raise ResponseError("DNS CNAME chain exceeds 16 links")
         auto target = _alias_target(aliases)
@@ -1059,3 +1147,171 @@ def _reverse_name(str ipaddr) -> Name:
     labels.append(b"in-addr")
     labels.append(b"arpa")
     return Name(labels)
+
+type _CacheKey = (bytes, int64, int64)
+
+enum _CacheValue:
+    Positive(bytes wire, str nameserver, int64 port)
+    MissingName
+    MissingRecords
+
+struct _CacheEntry:
+    _CacheKey key
+    _CacheValue value
+    int64 expires
+    Optional[_CacheEntry] previous = None
+    Optional[_CacheEntry] next = None
+
+# A bounded coroutine-safe LRU cache. Names are compared case-insensitively.
+struct Cache:
+    int64 max_size = 100000
+    bytes _mutex = sync.mutex()
+    dict[_CacheKey, _CacheEntry] _entries = {}
+    Optional[_CacheEntry] _head = None
+    Optional[_CacheEntry] _tail = None
+
+    def flush(self):
+        "Remove every positive and negative entry."
+        sync.lock(self._mutex)
+        try:
+            self._entries = {}
+            self._head = None
+            self._tail = None
+        finally:
+            sync.unlock(self._mutex)
+
+    def _get(
+        self,
+        Name name,
+        int64 rdtype,
+        int64 rdclass,
+        int64 now_ns,
+    ) -> Optional[_CacheValue]:
+        self._validate_capacity()
+        auto owner = _name_key(name, True)
+        list[_CacheKey] keys = [(owner, 0, rdclass), (owner, rdtype, rdclass)]
+        sync.lock(self._mutex)
+        try:
+            for key in keys:
+                if key in self._entries:
+                    auto entry = self._entries[key]
+                    if now_ns < entry.expires:
+                        self._unlink(entry)
+                        self._append(entry)
+                        return Optional.Some(entry.value)
+                    self._discard(key)
+            return None
+        finally:
+            sync.unlock(self._mutex)
+
+    def _put(
+        self,
+        Name name,
+        int64 rdtype,
+        int64 rdclass,
+        _CacheValue value,
+        int64 ttl,
+        int64 now_ns,
+    ):
+        self._validate_capacity()
+        auto owner = _name_key(name, True)
+        _CacheKey key = (owner, rdtype, rdclass)
+        sync.lock(self._mutex)
+        try:
+            # Type zero is the cache's name-wide NXDOMAIN marker. A fresh
+            # response replaces any contradictory cache entries.
+            if rdtype == 0:
+                for kind in [1, 2, 5, 6, 12, 15, 16, 28, 33]:
+                    self._discard((owner, kind, rdclass))
+            else:
+                self._discard((owner, 0, rdclass))
+            self._discard(key)
+            if ttl <= 0:
+                return
+            auto expires = _add_duration(now_ns, ttl * 1000000000)
+            auto entry = _CacheEntry(key, value, expires)
+            self._entries[key] = entry
+            self._append(entry)
+            while len(self._entries) > self.max_size:
+                self._discard(self._head.unwrap().key)
+        finally:
+            sync.unlock(self._mutex)
+
+    def _validate_capacity(self):
+        if self.max_size <= 0:
+            raise ValueError("DNS cache max_size must be positive")
+
+    def _discard(self, _CacheKey key):
+        if key in self._entries:
+            self._unlink(self._entries[key])
+            del self._entries[key]
+
+    def _unlink(self, _CacheEntry entry):
+        if entry.previous.is_some():
+            entry.previous.unwrap().next = entry.next
+        else:
+            self._head = entry.next
+        if entry.next.is_some():
+            entry.next.unwrap().previous = entry.previous
+        else:
+            self._tail = entry.previous
+
+    def _append(self, _CacheEntry entry):
+        entry.previous = self._tail
+        entry.next = None
+        if self._tail.is_some():
+            self._tail.unwrap().next = Optional.Some(entry)
+        else:
+            self._head = Optional.Some(entry)
+        self._tail = Optional.Some(entry)
+
+def _remember_nxdomain(
+    Cache cache,
+    RRset question,
+    Message response,
+    int64 received_ns,
+):
+    auto chain = _AnswerChain(question.name, None, 0)
+    try:
+        chain = _answer_chain(question, response)
+    except DNSException:
+        # Invalid alias data cannot establish the scope of the negative answer.
+        return
+    if chain.rrset.is_some():
+        # A positive RRset contradicts NXDOMAIN.
+        return
+    auto ttl = _negative_ttl(chain, response, question.rdclass)
+    auto kind = question.rdtype
+    if _name_key(chain.owner, True) == _name_key(question.name, True):
+        kind = 0
+    cache._put(
+        question.name,
+        kind,
+        question.rdclass,
+        _CacheValue.MissingName,
+        ttl,
+        received_ns,
+    )
+
+def _negative_ttl(_AnswerChain chain, Message response, int64 rdclass) -> int64:
+    auto count = -1
+    auto ttl = 0
+    for rrset in response.authority:
+        auto labels = len(rrset.name.labels)
+        if rrset.rdtype != 6 or rrset.rdclass != rdclass or labels < count or labels > len(chain.owner.labels):
+            continue
+        auto ancestor = Name(chain.owner.labels[len(chain.owner.labels) - labels:])
+        if _name_key(ancestor, True) != _name_key(rrset.name, True):
+            continue
+        for item in rrset.items:
+            match item:
+                case Rdata.SOA(_, _, _, _, _, _, minimum):
+                    auto limit = min(chain.ttl, rrset.ttl, minimum)
+                    if labels > count:
+                        ttl = limit
+                        count = labels
+                    else:
+                        ttl = min(ttl, limit)
+                case _:
+                    pass
+    return ttl
