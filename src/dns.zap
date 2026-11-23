@@ -100,9 +100,13 @@ struct Message:
         return _encode(self)
 
 def _query_name(str text) -> Name:
+    auto parsed = _parse_query_name(text)
+    return parsed[0]
+
+def _parse_query_name(str text) -> (Name, bool):
     auto data = bytes(text)
     if data == b".":
-        return Name([])
+        return (Name([]), True)
     if len(data) == 0:
         raise WireFormatError("empty DNS name; use '.' for the root")
     list[bytes] labels = []
@@ -142,11 +146,12 @@ def _query_name(str text) -> Name:
         if octet < 32 or octet > 126:
             raise WireFormatError("DNS query names require ASCII or decimal escapes")
         label.append(octet)
-    if len(label) != 0:
+    auto absolute = len(label) == 0
+    if not absolute:
         labels.append(bytes(label))
     auto name = Name(labels)
     _name_key(name, False)
-    return name
+    return (name, absolute)
 
 def _query_type(str mnemonic) -> int64:
     match mnemonic.upper():
@@ -579,3 +584,112 @@ def _add_duration(int64 now_ns, int64 duration_ns) -> int64:
 def _check_deadline(int64 deadline_ns, int64 now_ns):
     if now_ns >= deadline_ns:
         raise Timeout("DNS query deadline expired")
+
+# The directives understood by the resolver. Defaults for the other resolver
+# settings do not depend on the file.
+struct _ResolverFile:
+    list[str] nameservers
+    list[Name] search
+    int64 ndots
+
+def _parse_resolv_conf(str text, int64 default_ndots) -> _ResolverFile:
+    list[str] nameservers = []
+    list[Name] search = []
+    list[Name] domain = []
+    auto ndots = default_ndots
+    for line in text.splitlines():
+        list[str] fields = []
+        for field in line.split():
+            if field.startswith("#") or field.startswith(";"):
+                break
+            fields.append(field)
+        if len(fields) < 2:
+            continue
+        match fields[0]:
+            case "nameserver":
+                auto address = fields[1]
+                if _is_nameserver(address):
+                    nameservers.append(address)
+            case "search":
+                list[Name] valid = []
+                for index in range(1, len(fields)):
+                    try:
+                        valid.append(_query_name(fields[index]))
+                    except WireFormatError:
+                        pass
+                if len(valid) > 0:
+                    search = valid
+            case "domain":
+                try:
+                    domain = [_query_name(fields[1])]
+                except WireFormatError:
+                    pass
+            case "options":
+                for index in range(1, len(fields)):
+                    auto option = fields[index]
+                    if option.startswith("ndots:"):
+                        ndots = _parse_ndots(option[6:], ndots)
+            case _:
+                pass
+    if len(search) == 0:
+        search = domain
+    return _ResolverFile(nameservers, search, ndots)
+
+def _is_nameserver(str address) -> bool:
+    auto family = "ipv4"
+    if address.find(":") >= 0:
+        family = "ipv6"
+    try:
+        net.inet_pton(family, address)
+        return True
+    except ValueError:
+        return False
+
+def _parse_ndots(str text, int64 previous) -> int64:
+    auto digits = bytes(text)
+    if len(digits) == 0:
+        return previous
+    auto value = 0
+    for index in range(len(digits)):
+        auto digit = int64(digits[index]) - 48
+        if digit < 0 or digit > 9:
+            return previous
+        # Keep arbitrarily long decimal options within the POSIX resolver limit.
+        value = min(value * 10 + digit, 15)
+    return value
+
+# Normalized absolute names, in query order. The dots counted here are label
+# separators, so an escaped literal dot does not affect the ndots threshold.
+def _candidate_names(str text, list[Name] search, int64 ndots) -> list[Name]:
+    auto parsed = _parse_query_name(text)
+    auto name = parsed[0]
+    if parsed[1] or len(search) == 0:
+        return [name]
+
+    list[Name] result = []
+    dict[bytes, bool] seen = {}
+    auto key = _name_key(name, True)
+    auto absolute_first = len(name.labels) - 1 >= ndots
+    if absolute_first:
+        result.append(name)
+        seen[key] = True
+
+    for suffix in search:
+        list[bytes] labels = []
+        for label in name.labels:
+            labels.append(label)
+        for label in suffix.labels:
+            labels.append(label)
+        auto candidate = Name(labels)
+        try:
+            auto candidate_key = _name_key(candidate, True)
+            if candidate_key not in seen:
+                result.append(candidate)
+                seen[candidate_key] = True
+        except WireFormatError:
+            # A search expansion may be too long while the bare name is valid.
+            pass
+
+    if not absolute_first and key not in seen:
+        result.append(name)
+    return result

@@ -52,3 +52,19 @@ resolution lifetime, using exact integer `min`
 ([Zap #1279](https://github.com/zaplang-io/zap/issues/1279)). Zero means
 immediate expiry. Fractional nanoseconds round up, finite values beyond the
 representable range saturate, and negative or nonfinite values are invalid.
+
+## Resolver configuration ([#7](https://github.com/zaplang-io/dns/issues/7))
+
+The configuration parser understands `nameserver`, `search`, `domain`, and
+`options ndots:`. A valid `search` list takes precedence over `domain`.
+`ndots` from the file is capped at 15, following the system resolver
+convention. Invalid entries are ignored.
+
+Search qualification tries the bare name first at or above `ndots`, and
+tries the configured suffixes first below it. An absolute name skips suffix
+expansion. Duplicate candidates are compared case-insensitively, with the
+first spelling preserved.
+
+Reading file configuration and defaulting only when the file is absent
+depends on [Zap #1311](https://github.com/zaplang-io/zap/issues/1311). Platform
+scope, fallback behavior, and the public loading API are pending.
